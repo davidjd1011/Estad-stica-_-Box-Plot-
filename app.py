@@ -10,7 +10,7 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import streamlit as st
 
-st.set_page_config(page_title="Box-Plot y Medidas de Posición", page_icon="📦", layout="wide")
+st.set_page_config(page_title="Box-Plot y Medidas de Posición",  layout="wide")
 
 # ---------------------------------------------------------------- utilidades
 METODOS = {
@@ -92,7 +92,7 @@ etiquetas = st.sidebar.checkbox("Mostrar etiquetas en el gráfico", value=True)
 puntos = st.sidebar.checkbox("Mostrar todos los datos", value=False)
 
 # ---------------------------------------------------------------- encabezado
-st.title("📦 Medidas de Posición y Diagrama de Cajas y Alambres")
+st.title(" Medidas de Posición y Diagrama de Cajas y Alambres")
 st.caption("Estadística · Ingeniería de Sistemas — carga de datos, tendencia central, dispersión, posición y Box-Plot interactivo")
 
 if df is None or df.empty:
