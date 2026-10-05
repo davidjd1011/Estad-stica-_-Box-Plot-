@@ -1,248 +1,180 @@
-"""
-Medidas de Posición y Diagrama de Cajas y Alambres (Box-Plot)
-Estadística · Ingeniería de Sistemas
-Ejecutar:  streamlit run app.py
-"""
-import io
-import numpy as np
-import pandas as pd
-import plotly.graph_objects as go
-from plotly.subplots import make_subplots
-import streamlit as st
+import numpy as np, pandas as pd, plotly.graph_objects as go, streamlit as st
 
-st.set_page_config(page_title="Box-Plot y Medidas de Posición",  layout="wide")
+st.set_page_config(page_title="BoxLab | Medidas de Posición", page_icon="📦", layout="wide")
+st.markdown("""<style>
+.stApp{background:#FFFFFF}
+h1,h2,h3{color:#1B2A41;font-weight:700}
+.kpi{background:#F3F6FB;border:1px solid #E1E8F3;border-radius:10px;padding:12px 14px}
+.kpi small{color:#5B6B85;display:block}.kpi b{font-size:1.35rem;color:#1F4E9C}
+</style>""", unsafe_allow_html=True)
 
-# ---------------------------------------------------------------- utilidades
-METODOS = {
-    "Lineal (Excel CUARTIL.INC / R tipo 7)": "linear",
-    "Weibull (Excel CUARTIL.EXC / R tipo 6)": "weibull",
-    "Hazen (R tipo 5)": "hazen",
-    "Mediana insesgada (R tipo 8)": "median_unbiased",
+EJEMPLOS = {
+ "Caso 1 · Tiempo de respuesta API (ms)": [112,118,121,125,127,130,132,135,138,140,143,146,150,155,158,162,170,185,420,510],
+ "Caso 2 · Tiempo de resolución de tickets (h)": [1.5,2,2.2,2.5,2.8,3,3.1,3.4,3.6,4,4.2,4.5,5,5.5,6,6.5,7,8,26,30],
 }
 
-
-def ejemplo() -> pd.DataFrame:
-    lat = [120, 125, 130, 132, 135, 138, 140, 142, 145, 148, 150, 152,
-           155, 158, 160, 165, 170, 175, 182, 190, 420, 510]
-    a = [10, 12, 13, 14, 15, 16, 17, 18, 20]
-    b = [8, 9, 10, 11, 12, 13, 14, 15, 40]
-    return pd.DataFrame({"Latencia_API_ms": pd.Series(lat),
-                         "Algoritmo_A_ms": pd.Series(a),
-                         "Algoritmo_B_ms": pd.Series(b)})
-
-
-def leer_archivo(f) -> pd.DataFrame:
-    if f.name.lower().endswith((".xlsx", ".xls")):
-        return pd.read_excel(f)
-    return pd.read_csv(f, sep=None, engine="python", decimal=",") if b"," in f.getvalue()[:2000] and b";" in f.getvalue()[:2000] \
-        else pd.read_csv(io.BytesIO(f.getvalue()), sep=None, engine="python")
-
-
-def fmt(x, d=3):
-    return "—" if x is None or (isinstance(x, float) and np.isnan(x)) else f"{x:,.{d}f}"
-
-
-def estadisticos(x: np.ndarray, metodo: str, ddof: int, k: float, p: float) -> dict:
-    x = np.sort(x[~np.isnan(x)])
-    n = len(x)
-    q1, q2, q3 = np.percentile(x, [25, 50, 75], method=metodo)
-    ric = q3 - q1
-    li, ls = q1 - k * ric, q3 + k * ric
+def stats(x, method):
+    x = np.sort(np.asarray(x, float))
+    q1, q2, q3 = np.percentile(x, [25, 50, 75], method=method)
+    iqr = q3 - q1
+    li, ls = q1 - 1.5*iqr, q3 + 1.5*iqr
     dentro = x[(x >= li) & (x <= ls)]
-    at = x[(x < li) | (x > ls)]
-    media = x.mean()
-    sd = x.std(ddof=ddof) if n > ddof else np.nan
-    vals, cnt = np.unique(x, return_counts=True)
-    moda = ", ".join(fmt(v, 3) for v in vals[cnt == cnt.max()]) if cnt.max() > 1 else "Sin moda"
-    return dict(n=n, x=x, media=media, mediana=q2, moda=moda, min=x[0], max=x[-1],
-                rango=x[-1] - x[0], varianza=sd ** 2 if n > ddof else np.nan, sd=sd,
-                cv=sd / media * 100 if media else np.nan, q1=q1, q2=q2, q3=q3, ric=ric,
-                li=li, ls=ls, wl=dentro[0], wh=dentro[-1], atipicos=at,
-                pk=np.percentile(x, p, method=metodo),
-                asim=pd.Series(x).skew(), curt=pd.Series(x).kurt())
+    return dict(x=x, q1=q1, q2=q2, q3=q3, iqr=iqr, li=li, ls=ls,
+                wl=dentro.min(), wu=dentro.max(), out=x[(x < li) | (x > ls)],
+                ext=x[(x < q1-3*iqr) | (x > q3+3*iqr)])
 
+st.title("📦 BoxLab: Medidas de Posición y Diagrama de Cajas")
+st.caption("Ingeniería de Sistemas · Análisis estadístico interactivo con detección de valores atípicos")
 
-# ---------------------------------------------------------------- barra lateral
-st.sidebar.title("⚙️ Configuración")
-fuente = st.sidebar.radio("1. Fuente de datos", ["Datos de ejemplo", "Subir archivo (CSV/Excel)", "Pegar datos"])
-df = None
-if fuente == "Datos de ejemplo":
-    df = ejemplo()
-elif fuente.startswith("Subir"):
-    f = st.sidebar.file_uploader("Archivo CSV o Excel", type=["csv", "txt", "xlsx", "xls"])
-    if f is not None:
+# ---------- 1. Carga de datos ----------
+with st.sidebar:
+    st.header("1. Carga de datos")
+    fuente = st.radio("Fuente", ["Ejemplo", "Archivo CSV/Excel", "Escribir datos"])
+    datos, nombre, grupo, dfg = None, "Variable", None, None
+    if fuente == "Ejemplo":
+        nombre = st.selectbox("Conjunto", list(EJEMPLOS))
+        datos = pd.Series(EJEMPLOS[nombre], name=nombre)
+    elif fuente == "Archivo CSV/Excel":
+        f = st.file_uploader("Sube tu archivo", type=["csv", "xlsx"])
+        if f:
+            df = pd.read_csv(f) if f.name.endswith("csv") else pd.read_excel(f)
+            num = df.select_dtypes("number").columns.tolist()
+            if num:
+                nombre = st.selectbox("Columna numérica", num, index=next((i for i, c in enumerate(num) if "umedad" in c), 0))
+                datos = df[nombre].dropna()
+                cat = [c for c in df.columns if c not in num]
+                opc = ["Ninguno"] + cat
+                grupo = st.selectbox("Agrupar por (ej. Turno)", opc, index=opc.index("Turno") if "Turno" in opc else 0)
+                if grupo != "Ninguno":
+                    dfg = df[[nombre, grupo]].dropna()
+            else:
+                st.error("El archivo no tiene columnas numéricas.")
+    else:
+        txt = st.text_area("Valores separados por coma, espacio o salto de línea", "12, 15, 14, 10, 18, 20, 16, 55")
         try:
-            df = leer_archivo(f)
-        except Exception as e:
-            st.sidebar.error(f"No se pudo leer el archivo: {e}")
-else:
-    txt = st.sidebar.text_area("Números separados por espacio, coma o salto de línea", height=120)
-    try:
-        v = [float(t.replace(",", ".")) for t in txt.replace(";", " ").split()] if txt.strip() else []
-        df = pd.DataFrame({"Datos": v}) if v else None
-    except ValueError:
-        st.sidebar.error("Hay valores no numéricos.")
+            datos = pd.Series(pd.to_numeric(txt.replace(",", " ").split()), name="Variable")
+        except Exception:
+            st.error("Hay valores no numéricos.")
+    st.header("2. Parámetros")
+    metodo = st.selectbox("Método de cuantiles", ["linear", "weibull", "hazen", "median_unbiased", "lower", "higher", "midpoint"],
+                          help="'linear' equivale a Excel INC.; 'weibull' equivale a Excel EXC.")
+    k = st.slider("Percentil k a calcular", 1, 99, 90)
+    k_iqr = st.slider("Factor de los bigotes (×IQR)", 1.0, 3.0, 1.5, 0.5)
 
-metodo_nombre = st.sidebar.selectbox("2. Método de cuartiles", list(METODOS))
-muestral = st.sidebar.checkbox("Desviación muestral (n − 1)", value=True)
-k = st.sidebar.number_input("Factor k de las cercas", 0.5, 5.0, 1.5, 0.5,
-                            help="1,5 = atípicos; 3,0 = atípicos extremos")
-p = st.sidebar.slider("3. Percentil Pₚ dinámico", 0, 100, 90)
-etiquetas = st.sidebar.checkbox("Mostrar etiquetas en el gráfico", value=True)
-puntos = st.sidebar.checkbox("Mostrar todos los datos", value=False)
+if datos is None or len(datos) < 4:
+    st.info("Carga al menos 4 datos para comenzar."); st.stop()
 
-# ---------------------------------------------------------------- encabezado
-st.title(" Medidas de Posición y Diagrama de Cajas y Alambres")
-st.caption("Estadística · Ingeniería de Sistemas — carga de datos, tendencia central, dispersión, posición y Box-Plot interactivo")
+x = datos.to_numpy(float); n = len(x)
+s = stats(x, metodo)
+li, ls = s["q1"] - k_iqr*s["iqr"], s["q3"] + k_iqr*s["iqr"]
+dentro = s["x"][(s["x"] >= li) & (s["x"] <= ls)]
+wl, wu = dentro.min(), dentro.max()
+out = s["x"][(s["x"] < li) | (s["x"] > ls)]
+media, mediana = x.mean(), s["q2"]
+sd = x.std(ddof=1)
 
-if df is None or df.empty:
-    st.info("Cargue o pegue datos en la barra lateral para comenzar.")
-    st.stop()
+t1, t2, t3, t4 = st.tabs(["📊 Resumen", "📦 Box-Plot", "📐 Medidas de posición", "📘 Fórmulas"])
 
-num = df.select_dtypes(include=np.number).columns.tolist()
-if not num:
-    st.error("El conjunto de datos no contiene columnas numéricas.")
-    st.stop()
-cols = st.multiselect("Variables a analizar (puede comparar varias)", num, default=num[:1] if fuente != "Datos de ejemplo" else num)
-if not cols:
-    st.stop()
+with t1:
+    st.subheader("Medidas de tendencia central y dispersión")
+    moda = pd.Series(x).mode()
+    kp = [("n", n), ("Media x̄", media), ("Mediana Me", mediana),
+          ("Moda Mo", moda.iloc[0] if len(moda) < n else "Sin moda"),
+          ("Mínimo", x.min()), ("Máximo", x.max()), ("Rango R", np.ptp(x)),
+          ("Varianza s²", x.var(ddof=1)), ("Desv. estándar s", sd),
+          ("Coef. variación CV", f"{sd/media*100:.2f}%" if media else "—"),
+          ("Asimetría g₁", pd.Series(x).skew()), ("Curtosis g₂", pd.Series(x).kurt())]
+    cols = st.columns(4)
+    for i, (l, v) in enumerate(kp):
+        v = f"{v:,.3f}" if isinstance(v, (int, float, np.floating)) else v
+        cols[i % 4].markdown(f'<div class="kpi"><small>{l}</small><b>{v}</b></div>', unsafe_allow_html=True)
+        if i % 4 == 3: cols = st.columns(4)
+    st.markdown("**Ordenación de los datos (ascendente)**")
+    st.dataframe(pd.DataFrame({"Posición i": range(1, n+1), "x(i)": s["x"]}).set_index("Posición i").T, width="stretch")
+    if media > mediana*1.05: st.warning("Media > Mediana: distribución sesgada a la derecha (posible influencia de atípicos altos).")
+    elif media < mediana*0.95: st.warning("Media < Mediana: distribución sesgada a la izquierda.")
+    else: st.success("Media ≈ Mediana: distribución aproximadamente simétrica.")
 
-metodo, ddof = METODOS[metodo_nombre], int(muestral)
-res = {c: estadisticos(df[c].to_numpy(dtype=float), metodo, ddof, k, p) for c in cols}
+def box_por_grupo():
+    st.subheader("Box-Plot por grupo (turno)")
+    fig = go.Figure(); filas = []
+    for g, d in dfg.groupby(grupo):
+        v = d[nombre].to_numpy(float); gx = str(g)
+        a, b, c = np.percentile(v, [25, 50, 75], method=metodo); r = c - a
+        lo, hi = a - k_iqr*r, c + k_iqr*r
+        ins = v[(v >= lo) & (v <= hi)]; oi, os_ = v[v < lo], v[v > hi]
+        fig.add_trace(go.Box(x=[gx], q1=[a], median=[b], q3=[c], lowerfence=[ins.min()], upperfence=[ins.max()],
+                             fillcolor="rgba(31,78,156,.15)", line=dict(color="#1F4E9C", width=2), boxpoints=False,
+                             showlegend=False, width=0.4))
+        fig.add_trace(go.Scatter(x=[gx], y=[v.mean()], mode="markers+text", text=[f"x̄={v.mean():.2f}"], textposition="middle right",
+                                 marker=dict(color="#F2A900", size=12, symbol="diamond", line=dict(color="#1B2A41", width=1)),
+                                 name="Promedio", legendgroup="m", showlegend=(g == sorted(dfg[grupo].unique())[0])))
+        fig.add_trace(go.Scatter(x=[gx, gx], y=[lo, hi], mode="markers", marker=dict(color="#7A8AA3", size=14, symbol="line-ew-open"),
+                                 name="Límites LI / LS", legendgroup="l", showlegend=(g == sorted(dfg[grupo].unique())[0])))
+        if len(oi): fig.add_trace(go.Scatter(x=[gx]*len(oi), y=oi, mode="markers+text", text=[f"{t:g}" for t in oi], textposition="middle right",
+                                 marker=dict(color="#2A7DE1", size=10, symbol="circle-open", line=dict(width=2)), name="Atípico inferior", legendgroup="i", showlegend=False))
+        if len(os_): fig.add_trace(go.Scatter(x=[gx]*len(os_), y=os_, mode="markers+text", text=[f"{t:g}" for t in os_], textposition="middle right",
+                                 marker=dict(color="#D64545", size=10, symbol="circle-open", line=dict(width=2)), name="Atípico superior", legendgroup="s", showlegend=False))
+        filas.append({grupo: gx, "n": len(v), "Media x̄": round(v.mean(), 3), "Mediana": round(b, 3), "Desv. s": round(v.std(ddof=1), 3),
+                      "Q1": round(a, 3), "Q3": round(c, 3), "IQR": round(r, 3), "LI": round(lo, 3), "LS": round(hi, 3),
+                      "Atípicos inferiores": ", ".join(f"{t:g}" for t in oi) or "—", "Atípicos superiores": ", ".join(f"{t:g}" for t in os_) or "—"})
+    fig.update_layout(template="plotly_white", paper_bgcolor="white", plot_bgcolor="white", height=560, yaxis_title=nombre,
+                      xaxis_title=grupo, legend=dict(orientation="h", y=-0.15), margin=dict(l=20, r=20, t=30, b=20))
+    st.plotly_chart(fig, width="stretch")
+    tb = pd.DataFrame(filas); st.dataframe(tb, hide_index=True, width="stretch")
+    ni = sum(1 for f in filas if f["Atípicos inferiores"] != "—"); ns = sum(1 for f in filas if f["Atípicos superiores"] != "—")
+    st.info(f"{ni} grupo(s) con atípicos inferiores y {ns} grupo(s) con atípicos superiores.")
 
-tabs = st.tabs(["📄 Datos", "📊 Tendencia central y dispersión", "📐 Medidas de posición", "📦 Box-Plot", "🧠 Interpretación"])
 
-# ---------------------------------------------------------------- 1. datos
-with tabs[0]:
-    c1, c2, c3 = st.columns(3)
-    c1.metric("Filas", len(df))
-    c2.metric("Variables numéricas", len(num))
-    c3.metric("Valores faltantes", int(df[cols].isna().sum().sum()))
-    st.dataframe(df, use_container_width=True, height=300)
 
-# ---------------------------------------------------------------- 2. tendencia y dispersión
-with tabs[1]:
-    sim = "s" if muestral else "σ"
-    filas = {
-        "n": lambda r: r["n"], "Media (x̄)": lambda r: fmt(r["media"]), "Mediana (Me)": lambda r: fmt(r["mediana"]),
-        "Moda (Mo)": lambda r: r["moda"], "Mínimo": lambda r: fmt(r["min"]), "Máximo": lambda r: fmt(r["max"]),
-        "Rango (R)": lambda r: fmt(r["rango"]), f"Varianza ({sim}²)": lambda r: fmt(r["varianza"]),
-        f"Desviación estándar ({sim})": lambda r: fmt(r["sd"]), "Coef. de variación (CV %)": lambda r: fmt(r["cv"], 2),
-        "Asimetría (g₁)": lambda r: fmt(r["asim"], 3), "Curtosis (g₂)": lambda r: fmt(r["curt"], 3),
-    }
-    tabla = pd.DataFrame({c: [f(res[c]) for f in filas.values()] for c in cols}, index=list(filas)).astype(str)
-    st.dataframe(tabla, use_container_width=True, height=460)
-    st.latex(r"\bar{x}=\frac{\sum x_i}{n}\qquad s^2=\frac{\sum (x_i-\bar{x})^2}{n-1}\qquad CV=\frac{s}{\bar{x}}\cdot 100")
-
-# ---------------------------------------------------------------- 3. posición
-with tabs[2]:
-    pos = {"Q₁ (P25)": "q1", "Q₂ (P50)": "q2", "Q₃ (P75)": "q3", "RIC = Q₃ − Q₁": "ric",
-           f"Cerca inferior (Q₁ − {k}·RIC)": "li", f"Cerca superior (Q₃ + {k}·RIC)": "ls",
-           "Bigote inferior": "wl", "Bigote superior": "wh", f"Percentil P{p}": "pk"}
-    tp = pd.DataFrame({c: [fmt(res[c][v]) for v in pos.values()] for c in cols}, index=list(pos)).astype(str)
-    tp.loc["N.º de atípicos"] = [str(len(res[c]["atipicos"])) for c in cols]
-    st.dataframe(tp, use_container_width=True, height=400)
-    st.latex(r"h=(n-1)\cdot\frac{p}{100}\;;\quad P_p=x_{(\lfloor h\rfloor)}+(h-\lfloor h\rfloor)\,(x_{(\lfloor h\rfloor+1)}-x_{(\lfloor h\rfloor)})")
-    st.latex(r"RIC=Q_3-Q_1\;;\quad LI=Q_1-k\cdot RIC\;;\quad LS=Q_3+k\cdot RIC")
-    st.markdown("**Tabla de percentiles y deciles**")
-    pcts = [1, 5, 10, 20, 25, 30, 40, 50, 60, 70, 75, 80, 90, 95, 99]
-    tpc = pd.DataFrame({c: [fmt(np.percentile(res[c]["x"], q, method=metodo)) for q in pcts] for c in cols},
-                       index=[f"P{q}" for q in pcts]).astype(str)
-    st.dataframe(tpc, use_container_width=True, height=300)
-
-# ---------------------------------------------------------------- 4. boxplot
-with tabs[3]:
-    def separar(items, gap):
-        items = sorted(items, key=lambda t: t[1])
-        adj, prev = [], -np.inf
-        for _, v_ in items:
-            prev = max(v_, prev + gap)
-            adj.append(prev)
-        desp = np.mean(adj) - np.mean([v_ for _, v_ in items])
-        return [(n_, v_, a_ - desp) for (n_, v_), a_ in zip(items, adj)]
-
-    nc = len(cols)
-    fig = make_subplots(rows=1, cols=nc, subplot_titles=cols, horizontal_spacing=0.06)
-    rng_j = np.random.default_rng(1)
-    for i, c in enumerate(cols, start=1):
-        r = res[c]
-        lo, hi = min(r["min"], r["li"]), max(r["max"], r["ls"])
-        pad = (hi - lo) * 0.08 or 1.0
-        rng = [lo - pad, hi + pad]
-        gap = (rng[1] - rng[0]) * 0.05
-        first = i == 1
-
-        fig.add_trace(go.Box(x=[0], q1=[r["q1"]], median=[r["q2"]], q3=[r["q3"]],
-                             lowerfence=[r["wl"]], upperfence=[r["wh"]],
-                             fillcolor="rgba(31,111,235,0.25)", line=dict(color="#1f6feb", width=2),
-                             width=0.5, whiskerwidth=0.6, boxpoints=False, showlegend=False,
-                             hoverinfo="y"), row=1, col=i)
-        if puntos:
-            fig.add_trace(go.Scatter(x=rng_j.uniform(-0.15, 0.15, r["n"]), y=r["x"], mode="markers",
-                                     name="Datos", legendgroup="d", showlegend=first,
-                                     marker=dict(size=5, color="rgba(120,120,120,0.5)"),
-                                     hovertemplate="%{y:.3f}<extra></extra>"), row=1, col=i)
-        fig.add_trace(go.Scatter(x=[-0.3, 0.3, None, -0.3, 0.3], y=[r["li"], r["li"], None, r["ls"], r["ls"]],
-                                 mode="lines", name="Cercas (LI / LS)", legendgroup="c", showlegend=first,
-                                 line=dict(color="#d93025", dash="dash", width=1.5),
-                                 hoverinfo="skip"), row=1, col=i)
-        fig.add_trace(go.Scatter(x=[0], y=[r["media"]], mode="markers", name="Media (x̄)",
-                                 legendgroup="m", showlegend=first,
-                                 marker=dict(symbol="diamond", size=12, color="#188038",
-                                             line=dict(color="white", width=1)),
-                                 hovertemplate=f"Media: {fmt(r['media'])}<extra></extra>"), row=1, col=i)
-        if len(r["atipicos"]):
-            fig.add_trace(go.Scatter(x=[0] * len(r["atipicos"]), y=r["atipicos"], mode="markers",
-                                     name="Valores atípicos", legendgroup="o", showlegend=first,
-                                     marker=dict(symbol="circle-open", size=11, color="#d93025",
-                                                 line=dict(width=2)),
-                                     hovertemplate="Atípico: %{y:.3f}<extra></extra>"), row=1, col=i)
-        if etiquetas:
-            items = [("Q₃", r["q3"]), ("Mediana", r["q2"]), ("Q₁", r["q1"]), ("Media", r["media"]),
-                     ("Bigote sup.", r["wh"]), ("Bigote inf.", r["wl"]),
-                     ("Cerca sup.", r["ls"]), ("Cerca inf.", r["li"])]
-            lab = separar(items, gap)
-            for n_, v_, a_ in lab:
-                fig.add_trace(go.Scatter(x=[0.3, 0.42], y=[v_, a_], mode="lines", hoverinfo="skip",
-                                         showlegend=False, line=dict(color="rgba(150,150,150,0.6)", width=1)),
-                              row=1, col=i)
-            fig.add_trace(go.Scatter(x=[0.44] * len(lab), y=[a_ for _, _, a_ in lab], mode="text",
-                                     text=[f"{n_} {fmt(v_, 2)}" for n_, v_, _ in lab],
-                                     textposition="middle right", textfont=dict(size=11),
-                                     showlegend=False, hoverinfo="skip"), row=1, col=i)
-        fig.add_trace(go.Scatter(x=[-0.6, 0.3], y=[r["pk"], r["pk"]], mode="lines+text",
-                                 text=[f"P{p} = {fmt(r['pk'], 2)}", ""], textposition="top right",
-                                 textfont=dict(size=11, color="gray"),
-                                 line=dict(color="gray", dash="dot", width=1),
-                                 showlegend=False, hoverinfo="skip"), row=1, col=i)
-        fig.update_xaxes(visible=False, range=[-0.6, 1.6], fixedrange=True, row=1, col=i)
-        fig.update_yaxes(range=rng, showgrid=True, gridcolor="rgba(150,150,150,0.2)", zeroline=False,
-                         title_text="Valor" if first else None, row=1, col=i)
-    fig.update_layout(height=640, margin=dict(t=50, b=70, l=60, r=20),
-                      legend=dict(orientation="h", y=-0.06, x=0.5, xanchor="center"))
-    st.plotly_chart(fig, use_container_width=True)
-    resumen = pd.DataFrame({c: {"Q1": res[c]["q1"], "Mediana": res[c]["q2"], "Media": res[c]["media"], "Q3": res[c]["q3"],
-                                "RIC": res[c]["ric"], "Cerca inf.": res[c]["li"], "Cerca sup.": res[c]["ls"],
-                                "Bigote inf.": res[c]["wl"], "Bigote sup.": res[c]["wh"],
-                                "Atípicos": "; ".join(fmt(a, 2) for a in res[c]["atipicos"]) or "ninguno"} for c in cols})
-    st.download_button("⬇️ Descargar resumen (CSV)", resumen.to_csv().encode("utf-8-sig"), "resumen_boxplot.csv", "text/csv")
-
-# ---------------------------------------------------------------- 5. interpretación
-with tabs[4]:
-    for c in cols:
-        r = res[c]
-        st.subheader(c)
-        dif = r["media"] - r["mediana"]
-        forma = ("simétrica" if abs(dif) < 0.05 * (r["ric"] or 1)
-                 else "asimétrica positiva (cola a la derecha, x̄ > Me)" if dif > 0
-                 else "asimétrica negativa (cola a la izquierda, x̄ < Me)")
-        cv = r["cv"]
-        disp = "baja" if cv < 15 else "moderada" if cv < 30 else "alta"
-        st.markdown(f"- **Forma:** distribución {forma}.\n- **Dispersión:** CV = {fmt(cv, 1)} % → variabilidad {disp}. "
-                    f"El 50 % central de los datos se concentra en [{fmt(r['q1'])}; {fmt(r['q3'])}] (RIC = {fmt(r['ric'])}).")
-        if len(r["atipicos"]):
-            st.warning(f"**{len(r['atipicos'])} valor(es) atípico(s):** {', '.join(fmt(a, 2) for a in r['atipicos'])}, "
-                       f"fuera de [{fmt(r['li'])}; {fmt(r['ls'])}]. Verifique si son errores de captura o eventos reales "
-                       f"(picos de carga, timeouts). La mediana ({fmt(r['mediana'])}) es más representativa que la media ({fmt(r['media'])}).")
+with t2:
+    if dfg is not None:
+        box_por_grupo()
+    else:
+        fig = go.Figure()
+        fig.add_trace(go.Box(q1=[s["q1"]], median=[mediana], q3=[s["q3"]], lowerfence=[wl], upperfence=[wu],
+                             x=[nombre[:40]], name="Caja", fillcolor="rgba(31,78,156,.15)",
+                             line=dict(color="#1F4E9C", width=2), boxpoints=False, width=0.35))
+        fig.add_trace(go.Scatter(x=[nombre[:40]]*len(out), y=out, mode="markers+text", name="Atípicos",
+                                 text=[f"{v:g}" for v in out], textposition="middle right",
+                                 marker=dict(color="#D64545", size=11, symbol="circle-open", line=dict(width=2))))
+        fig.add_trace(go.Scatter(x=[nombre[:40]], y=[media], mode="markers", name=f"Promedio x̄ = {media:.2f}",
+                                 marker=dict(color="#F2A900", size=13, symbol="diamond", line=dict(color="#1B2A41", width=1))))
+        for y, lbl, c in [(li, "Límite inferior", "#7A8AA3"), (ls, "Límite superior", "#7A8AA3"),
+                          (mediana, f"Mediana = {mediana:.2f}", "#1F4E9C")]:
+            fig.add_hline(y=y, line_dash="dot", line_color=c, annotation_text=f"{lbl}: {y:.2f}",
+                          annotation_position="top left", annotation_font_color=c)
+        fig.update_layout(template="plotly_white", paper_bgcolor="white", plot_bgcolor="white", height=560,
+                          yaxis_title=nombre, legend=dict(orientation="h", y=-0.1), margin=dict(l=20, r=20, t=30, b=20))
+        st.plotly_chart(fig, width="stretch")
+        c = st.columns(5)
+        for col, (l, v) in zip(c, [("Q₁", s["q1"]), ("Q₃", s["q3"]), ("IQR", s["iqr"]), ("Bigote inf.", wl), ("Bigote sup.", wu)]):
+            col.metric(l, f"{v:,.3f}")
+        if len(out):
+            st.error(f"Se detectaron {len(out)} valor(es) atípico(s): {', '.join(f'{v:g}' for v in out)}")
+            st.dataframe(pd.DataFrame({"Valor": out, "Tipo": ["Extremo" if (v < s['q1']-3*s['iqr'] or v > s['q3']+3*s['iqr']) else "Leve" for v in out]}), hide_index=True)
         else:
-            st.success("No se detectan valores atípicos con el factor k seleccionado.")
+            st.success("No se detectaron valores atípicos con el criterio actual.")
+
+
+with t3:
+    st.subheader("Cálculo dinámico de medidas de posición")
+    qs = [10, 20, 25, 30, 40, 50, 60, 70, 75, 80, 90, k]
+    qs = sorted(set(qs))
+    tabla = pd.DataFrame({"Percentil": [f"P{p}" for p in qs],
+                          "Equivale a": [{25: "Q1", 50: "Q2 (Mediana)", 75: "Q3"}.get(p, f"D{p//10}" if p % 10 == 0 else "") for p in qs],
+                          "Valor": [np.percentile(x, p, method=metodo) for p in qs]})
+    st.dataframe(tabla, hide_index=True, width="stretch")
+    pos = (n + 1) * k / 100
+    st.info(f"Posición de P{k}: L = (n+1)·k/100 = ({n}+1)·{k}/100 = **{pos:.2f}** → valor = **{np.percentile(x, k, method=metodo):.3f}**")
+    v = st.number_input("Rango percentil de un valor x₀", value=float(mediana))
+    st.metric(f"PR(x₀={v:g})", f"{(x < v).sum()/n*100 + 0.5*(x == v).sum()/n*100:.1f} %")
+
+with t4:
+    st.subheader("Fórmulas utilizadas")
+    st.latex(r"\bar{x}=\frac{1}{n}\sum_{i=1}^{n}x_i \qquad s^2=\frac{\sum (x_i-\bar{x})^2}{n-1} \qquad s=\sqrt{s^2} \qquad CV=\frac{s}{\bar{x}}\cdot 100")
+    st.latex(r"L_k=\frac{k\,(n+1)}{100} \qquad P_k = x_{(\lfloor L_k\rfloor)}+(L_k-\lfloor L_k\rfloor)\,\big(x_{(\lfloor L_k\rfloor+1)}-x_{(\lfloor L_k\rfloor)}\big)")
+    st.latex(r"Q_1=P_{25},\; Q_2=P_{50}=Me,\; Q_3=P_{75} \qquad IQR=Q_3-Q_1")
+    st.latex(r"LI=Q_1-1.5\cdot IQR \qquad LS=Q_3+1.5\cdot IQR")
+    st.markdown("Un dato es **atípico leve** si cae fuera de [LI, LS] y **extremo** si excede Q₁−3·IQR o Q₃+3·IQR.")
+    st.caption("Los bigotes llegan al dato más extremo que aún está dentro de [LI, LS].")
